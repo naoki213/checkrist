@@ -81,11 +81,11 @@
   </main>
 
   <script>
-    // ====== 設定（必ず変更） ======
+    // ====== 設定 ======
     const CONFIG = {
-      SPREADSHEET_ID: "1reMg4Us-dhO75cHdjJgOrK4k2baStMpVYo-BGqw2jNc", // ← 置き換え
-      SHEET_NAME: "Checklist",               // 既定名。変えるならシート側も作成してOK（自動ヘッダー作成）
-      GOOGLE_CLIENT_ID: "625081881930-td4vcu2cpnhp6n2aevc453m7as2l96tk.apps.googleusercontent.com", // ← 置き換え
+      SPREADSHEET_ID: "1reMg4Us-dhO75cHdjJgOrK4k2baStMpVYo-BGqw2jNc",
+      SHEET_NAME: "Checklist",
+      GOOGLE_CLIENT_ID: "625081881930-td4vcu2cpnhp6n2aevc453m7as2l96tk.apps.googleusercontent.com",
       SCOPE: "https://www.googleapis.com/auth/spreadsheets"
     };
 
@@ -277,26 +277,55 @@
       loadLocal(); render();
     };
 
+    // 取得のたびに callback を明示し、accessToken を必ず格納
     function requestAccessToken({ prompt }) {
+      tokenClient.callback = (resp) => {
+        if (resp && resp.access_token) {
+          accessToken = resp.access_token;
+          $signoutBtn.style.display = "inline-block";
+          $signinBtn.style.display = "none";
+          $userLabel.textContent = "サインイン済み";
+          initApp();
+        }
+      };
       tokenClient.requestAccessToken({ prompt });
-      // Note: callbackで処理継続
     }
 
+    // 取得したトークンを必ず代入（silent→consent の二段構え）
     async function ensureSignedIn() {
       if (accessToken) return;
-      return new Promise((resolve) => {
-        const once = (resp) => {
-          if (resp && resp.access_token) { resolve(); }
+      return new Promise((resolve, reject) => {
+        // silent
+        tokenClient.callback = (resp) => {
+          if (resp && resp.access_token) {
+            accessToken = resp.access_token;
+            $signoutBtn.style.display = "inline-block";
+            $signinBtn.style.display = "none";
+            $userLabel.textContent = "サインイン済み";
+            resolve();
+          } else {
+            reject(new Error("Failed to get access token (silent)"));
+          }
         };
-        tokenClient.callback = once;
-        tokenClient.requestAccessToken({ prompt: "" }); // サイレント
-        // 失敗時は明示
+        tokenClient.requestAccessToken({ prompt: "" });
+
+        // silentで入らなければ consent で再挑戦
         setTimeout(() => {
           if (!accessToken) {
-            tokenClient.callback = (resp) => { if (resp && resp.access_token) resolve(); };
+            tokenClient.callback = (resp) => {
+              if (resp && resp.access_token) {
+                accessToken = resp.access_token;
+                $signoutBtn.style.display = "inline-block";
+                $signinBtn.style.display = "none";
+                $userLabel.textContent = "サインイン済み";
+                resolve();
+              } else {
+                reject(new Error("Failed to get access token (consent)"));
+              }
+            };
             tokenClient.requestAccessToken({ prompt: "consent" });
           }
-        }, 600);
+        }, 700);
       });
     }
 
@@ -358,35 +387,35 @@
       setSync("idle");
     }
 
-   async function saveToSheet() {
-  setSync("保存中…");
+    async function saveToSheet() {
+      setSync("保存中…");
 
-  // まずデータ域をクリア
-  await gFetch(`https://sheets.googleapis.com/v4/spreadsheets/${CONFIG.SPREADSHEET_ID}/values:batchClear`, {
-    method: "POST",
-    body: JSON.stringify({ ranges: [`${CONFIG.SHEET_NAME}!A2:F`] })
-  });
+      // まずデータ域をクリア
+      await gFetch(`https://sheets.googleapis.com/v4/spreadsheets/${CONFIG.SPREADSHEET_ID}/values:batchClear`, {
+        method: "POST",
+        body: JSON.stringify({ ranges: [`${CONFIG.SHEET_NAME}!A2:F`] })
+      });
 
-  // 正しい batchUpdate エンドポイントで一括書き込み
-  const values = items.map(i => [
-    i.id, i.text, i.done ? "TRUE" : "FALSE",
-    String(i.createdAt),
-    i.doneAt ? String(i.doneAt) : "",
-    String(i.updatedAt)
-  ]);
+      // 正しい batchUpdate エンドポイントで一括書き込み
+      const values = items.map(i => [
+        i.id, i.text, i.done ? "TRUE" : "FALSE",
+        String(i.createdAt),
+        i.doneAt ? String(i.doneAt) : "",
+        String(i.updatedAt)
+      ]);
 
-  await gFetch(`https://sheets.googleapis.com/v4/spreadsheets/${CONFIG.SPREADSHEET_ID}/values:batchUpdate`, {
-    method: "POST",
-    body: JSON.stringify({
-      valueInputOption: "RAW",
-      data: [
-        { range: `${CONFIG.SHEET_NAME}!A2:F`, values }
-      ]
-    })
-  });
+      await gFetch(`https://sheets.googleapis.com/v4/spreadsheets/${CONFIG.SPREADSHEET_ID}/values:batchUpdate`, {
+        method: "POST",
+        body: JSON.stringify({
+          valueInputOption: "RAW",
+          data: [
+            { range: `${CONFIG.SHEET_NAME}!A2:F`, values }
+          ]
+        })
+      });
 
-  setSync("idle");
-}
+      setSync("idle");
+    }
 
     function mergeById(localArr, remoteArr) {
       const map = new Map();
@@ -404,13 +433,24 @@
 
     function setSync(text){ $syncState.textContent = `状態: ${text}`; }
 
+    // 401 のときは再取得→リトライ
     async function gFetch(url, init = {}) {
-      if (!accessToken) throw new Error("No access token");
-      const headers = Object.assign({}, init.headers || {}, {
-        "Authorization": `Bearer ${accessToken}`,
-        "Content-Type": "application/json"
-      });
-      const resp = await fetch(url, { ...init, headers });
+      if (!accessToken) {
+        await ensureSignedIn();
+      }
+      const doFetch = async () => {
+        const headers = Object.assign({}, init.headers || {}, {
+          "Authorization": `Bearer ${accessToken}`,
+          "Content-Type": "application/json"
+        });
+        return fetch(url, { ...init, headers });
+      };
+      let resp = await doFetch();
+      if (resp.status === 401) {
+        accessToken = null;
+        await ensureSignedIn();
+        resp = await doFetch();
+      }
       if (!resp.ok) {
         const txt = await resp.text().catch(()=> "");
         console.warn("Sheets API error:", resp.status, txt);
