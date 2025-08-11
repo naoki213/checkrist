@@ -358,26 +358,35 @@
       setSync("idle");
     }
 
-    async function saveToSheet() {
-      setSync("保存中…");
-      // まずデータ域をクリア
-      await gFetch(`https://sheets.googleapis.com/v4/spreadsheets/${CONFIG.SPREADSHEET_ID}/values:batchClear`, {
-        method: "POST",
-        body: JSON.stringify({ ranges: [`${CONFIG.SHEET_NAME}!A2:F`] })
-      });
-      // 書き込み
-      const values = items.map(i => [
-        i.id, i.text, i.done ? "TRUE" : "FALSE",
-        String(i.createdAt),
-        i.doneAt ? String(i.doneAt) : "",
-        String(i.updatedAt)
-      ]);
-      await gFetch(`https://sheets.googleapis.com/v4/spreadsheets/${CONFIG.SPREADSHEET_ID}/values/${encodeURIComponent(CONFIG.SHEET_NAME+"!A2")}:batchUpdate?valueInputOption=RAW`, {
-        method: "POST",
-        body: JSON.stringify({ data: [{ range: `${CONFIG.SHEET_NAME}!A2:F`, values }] })
-      });
-      setSync("idle");
-    }
+   async function saveToSheet() {
+  setSync("保存中…");
+
+  // まずデータ域をクリア
+  await gFetch(`https://sheets.googleapis.com/v4/spreadsheets/${CONFIG.SPREADSHEET_ID}/values:batchClear`, {
+    method: "POST",
+    body: JSON.stringify({ ranges: [`${CONFIG.SHEET_NAME}!A2:F`] })
+  });
+
+  // 正しい batchUpdate エンドポイントで一括書き込み
+  const values = items.map(i => [
+    i.id, i.text, i.done ? "TRUE" : "FALSE",
+    String(i.createdAt),
+    i.doneAt ? String(i.doneAt) : "",
+    String(i.updatedAt)
+  ]);
+
+  await gFetch(`https://sheets.googleapis.com/v4/spreadsheets/${CONFIG.SPREADSHEET_ID}/values:batchUpdate`, {
+    method: "POST",
+    body: JSON.stringify({
+      valueInputOption: "RAW",
+      data: [
+        { range: `${CONFIG.SHEET_NAME}!A2:F`, values }
+      ]
+    })
+  });
+
+  setSync("idle");
+}
 
     function mergeById(localArr, remoteArr) {
       const map = new Map();
